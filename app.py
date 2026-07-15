@@ -5,31 +5,32 @@ import os
 from datetime import datetime
 
 app = Flask(__name__)
-CORS(app)  # Разрешаем запросы с любых сайтов
+CORS(app)
 
-# --- ПОДКЛЮЧЕНИЕ К БАЗЕ ДАННЫХ ---
 def get_db_connection():
-    # Если вы размещаете на Render.com — данные будут из переменных окружения
-    # Если запускаете локально — используйте эти настройки
     return psycopg2.connect(
         host=os.environ.get('DB_HOST', 'localhost'),
         port=os.environ.get('DB_PORT', '5432'),
-        database=os.environ.get('DB_NAME', 'dentistry_clinic'),
-        user=os.environ.get('DB_USER', 'website_user'),
-        password=os.environ.get('DB_PASSWORD', 'Новый_Пароль_2026!')  # ЗАМЕНИТЕ!
+        database=os.environ.get('DB_NAME', 'my_clinic'),
+        user=os.environ.get('DB_USER', 'postgres'),
+        password=os.environ.get('DB_PASSWORD', ''),
+        sslmode=os.environ.get('PGSSLMODE', 'require')
     )
 
-# --- API: ПОЛУЧИТЬ ДАННЫЕ ПАЦИЕНТА ---
+@app.route('/')
+def home():
+    return jsonify({'message': 'API работает! Используйте /api/patient/1 для получения данных'})
+
 @app.route('/api/patient/<int:patient_id>')
 def get_patient(patient_id):
     try:
         conn = get_db_connection()
         cur = conn.cursor()
         
-        # 1. Данные пациента
+        # Данные пациента
         cur.execute("""
             SELECT patient_id, first_name, last_name, patronymic, 
-                   birth_date, phone, email, registration_date
+                   birth_date, phone, email
             FROM patients 
             WHERE patient_id = %s
         """, (patient_id,))
@@ -38,19 +39,18 @@ def get_patient(patient_id):
         if not patient:
             return jsonify({'error': 'Пациент не найден'}), 404
         
-        # 2. Зубная карта
+        # Зубная карта
         cur.execute("""
-            SELECT tooth_number, status, notes, updated_at
+            SELECT tooth_number, status, notes
             FROM teeth_status
             WHERE patient_id = %s
             ORDER BY tooth_number
         """, (patient_id,))
         teeth = cur.fetchall()
         
-        # 3. История посещений
+        # История посещений
         cur.execute("""
-            SELECT v.visit_id, v.visit_date, v.diagnosis, v.treatment, 
-                   v.cost, v.status,
+            SELECT v.visit_date, v.diagnosis, v.treatment, v.cost,
                    d.first_name, d.last_name, d.specialization
             FROM visits v
             JOIN doctors d ON v.doctor_id = d.doctor_id
@@ -62,7 +62,6 @@ def get_patient(patient_id):
         cur.close()
         conn.close()
         
-        # Форматируем данные в JSON
         return jsonify({
             'patient': {
                 'id': patient[0],
@@ -71,107 +70,60 @@ def get_patient(patient_id):
                 'patronymic': patient[3] or '',
                 'birthDate': patient[4].strftime('%d.%m.%Y') if patient[4] else None,
                 'phone': patient[5] or '',
-                'email': patient[6],
-                'registrationDate': patient[7].strftime('%d.%m.%Y') if patient[7] else None
+                'email': patient[6]
             },
             'teeth': [
-                {
-                    'number': t[0],
-                    'status': t[1],
-                    'notes': t[2] or '',
-                    'updatedAt': t[3].strftime('%d.%m.%Y %H:%M') if t[3] else None
-                } for t in teeth
+                {'number': t[0], 'status': t[1], 'notes': t[2] or ''}
+                for t in teeth
             ],
             'visits': [
                 {
-                    'id': v[0],
-                    'date': v[1].strftime('%d.%m.%Y %H:%M') if v[1] else None,
-                    'diagnosis': v[2] or '',
-                    'treatment': v[3] or '',
-                    'cost': float(v[4]) if v[4] else 0,
-                    'status': v[5] or '',
-                    'doctor': f"{v[6]} {v[7]}" if v[6] else '',
-                    'specialization': v[8] or ''
-                } for v in visits
+                    'date': v[0].strftime('%d.%m.%Y %H:%M') if v[0] else None,
+                    'diagnosis': v[1] or '',
+                    'treatment': v[2] or '',
+                    'cost': float(v[3]) if v[3] else 0,
+                    'doctor': f"{v[4]} {v[5]}" if v[4] else '',
+                    'specialization': v[6] or ''
+                }
+                for v in visits
             ]
         })
-        
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
-# --- API: РЕГИСТРАЦИЯ (опционально) ---
-@app.route('/api/register', methods=['POST'])
-def register():
+# --- НОВЫЙ ЭНДПОИНТ: ДОБАВЛЕНИЕ ПОСЕЩЕНИЯ ---
+@app.route('/api/visit', methods=['POST'])
+def add_visit():
     try:
         data = request.json
-        first_name = data.get('firstName')
-        last_name = data.get('lastName')
-        email = data.get('email')
-        password = data.get('password')
-        birth_date = data.get('birthDate')
-        phone = data.get('phone')
+        patient_id = data.get('patient_id')
+        doctor_id = data.get('doctor_id')
+        diagnosis = data.get('diagnosis')
+        treatment = data.get('treatment')
+        cost = data.get('cost')
+        visit_date = data.get('visit_date', datetime.now().isoformat())
         
-        # Здесь должна быть валидация и хеширование пароля
-        # Для простоты пропустим
+        # Проверка, что все поля заполнены
+        if not all([patient_id, doctor_id, diagnosis, treatment, cost]):
+            return jsonify({'error': 'Все поля обязательны'}), 400
         
         conn = get_db_connection()
         cur = conn.cursor()
         
-        # Вставляем пациента
         cur.execute("""
-            INSERT INTO patients (first_name, last_name, birth_date, phone, email)
-            VALUES (%s, %s, %s, %s, %s)
-            RETURNING patient_id
-        """, (first_name, last_name, birth_date, phone, email))
+            INSERT INTO visits (patient_id, doctor_id, visit_date, diagnosis, treatment, cost, status)
+            VALUES (%s, %s, %s, %s, %s, %s, 'завершён')
+            RETURNING visit_id
+        """, (patient_id, doctor_id, visit_date, diagnosis, treatment, cost))
         
-        patient_id = cur.fetchone()[0]
+        visit_id = cur.fetchone()[0]
         conn.commit()
         cur.close()
         conn.close()
         
-        return jsonify({'success': True, 'patientId': patient_id})
+        return jsonify({'success': True, 'visit_id': visit_id})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
-# --- API: ВХОД (опционально) ---
-@app.route('/api/login', methods=['POST'])
-def login():
-    try:
-        data = request.json
-        email = data.get('email')
-        password = data.get('password')
-        
-        # Для простоты пропускаем проверку пароля
-        conn = get_db_connection()
-        cur = conn.cursor()
-        
-        cur.execute("""
-            SELECT u.user_id, u.patient_id, p.first_name, p.last_name
-            FROM users u
-            JOIN patients p ON u.patient_id = p.patient_id
-            WHERE u.email = %s
-        """, (email,))
-        
-        user = cur.fetchone()
-        cur.close()
-        conn.close()
-        
-        if user:
-            return jsonify({
-                'success': True,
-                'userId': user[0],
-                'patientId': user[1],
-                'fullName': f"{user[2]} {user[3]}"
-            })
-        else:
-            return jsonify({'error': 'Пользователь не найден'}), 401
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-@app.route('/')
-def home():
-    return jsonify({'message': 'API работает! Используйте /api/patient/1 для получения данных'})
-    
-# --- ЗАПУСК ---
 if __name__ == '__main__':
     app.run(debug=True, port=5000)
