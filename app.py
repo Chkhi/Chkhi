@@ -17,6 +17,69 @@ def get_db_connection():
         sslmode=os.environ.get('PGSSLMODE', 'require')
     )
 
+@app.route('/api/register', methods=['POST'])
+def register():
+    try:
+        data = request.json
+        
+        # Проверяем обязательные поля
+        required_fields = ['firstName', 'lastName', 'email', 'password', 'birthDate']
+        for field in required_fields:
+            if not data.get(field):
+                return jsonify({'error': f'Поле {field} обязательно'}), 400
+        
+        first_name = data['firstName']
+        last_name = data['lastName']
+        patronymic = data.get('patronymic', '')
+        email = data['email']
+        password = data['password']
+        birth_date = data['birthDate']
+        phone = data.get('phone', '')
+        address = data.get('address', '')
+        gender = data.get('gender', '')
+        
+        # Проверяем, существует ли пользователь с таким email
+        conn = get_db_connection()
+        cur = conn.cursor()
+        
+        cur.execute("SELECT patient_id FROM patients WHERE email = %s", (email,))
+        if cur.fetchone():
+            cur.close()
+            conn.close()
+            return jsonify({'error': 'Пользователь с таким email уже существует'}), 409
+        
+        # Вставляем пациента
+        cur.execute("""
+            INSERT INTO patients (first_name, last_name, patronymic, birth_date, gender, phone, email, address)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            RETURNING patient_id
+        """, (first_name, last_name, patronymic, birth_date, gender, phone, email, address))
+        
+        patient_id = cur.fetchone()[0]
+        
+        # Хешируем пароль
+        import hashlib
+        password_hash = hashlib.sha256(password.encode()).hexdigest()
+        
+        # Создаём пользователя
+        cur.execute("""
+            INSERT INTO users (patient_id, email, password_hash, role)
+            VALUES (%s, %s, %s, 'patient')
+        """, (patient_id, email, password_hash))
+        
+        conn.commit()
+        cur.close()
+        conn.close()
+        
+        return jsonify({
+            'success': True,
+            'message': 'Регистрация успешна!',
+            'patientId': patient_id
+        })
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+        
 @app.route('/')
 def home():
     return jsonify({'message': 'API работает! Используйте /api/patient/1 для получения данных'})
