@@ -168,6 +168,10 @@ def login():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+@app.route('/')
+def home():
+    return jsonify({'message': 'API работает! Используйте /api/patient/1 для получения данных'})
+    
 # --- ЗАПУСК ---
 if __name__ == '__main__':
     app.run(debug=True, port=5000)
